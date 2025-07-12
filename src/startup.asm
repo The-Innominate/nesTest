@@ -5,6 +5,20 @@
 .byte $01                     ; 1 x 8KB CHR-ROM bank
 .byte $00, $00                ; Mapper 0, no special features
 
+.segment "ZEROPAGE"
+
+game_state:     .res 1
+player_x:       .res 1
+player_y:       .res 1
+ball_x:         .res 1
+ball_y:         .res 1
+ball_dx:        .res 1
+ball_dy:        .res 1
+score:          .res 1
+scroll:         .res 1
+time:           .res 1
+seconds:        .res 1
+
 ; Main program code section
 .segment "CODE"
 
@@ -15,7 +29,9 @@
 
 ; Non-Maskable Interrupt Handler - called during VBlank
 .proc nmi_handler
-  RTI                     ; Return from interrupt (not using NMI yet)
+  JSR update_ball        ; Update ball position
+  JSR draw_ball_sprite   ; Draw ball based on new position
+  RTI
 .endproc
 
 ; Reset Handler - called when system starts up or resets
@@ -35,7 +51,9 @@
 
   ; === PPU Initialization ===
   INX                     ; Increment X (now $00)
-  STX $2000               ; PPUCTRL = 0 (disable NMI, sprites, background)
+  LDA #%10000000           ; bit 7 = 1 → enable NMI
+  STA $2000
+
   STX $2001               ; PPUMASK = 0 (disable rendering)
   STX $4010               ; DMC frequency register = 0 (disable DMC)
 
@@ -54,10 +72,81 @@ vblankwait2:
   BPL vblankwait2         ; Branch if Plus (bit 7 = 0, no VBlank)
                           ; Loop until second VBlank occurs
 
+  ; --- Ball Initialization ---
+  LDA #$80        ; Start X at 128
+  STA ball_x
+
+  LDA #$60        ; Start Y at 96
+  STA ball_y
+
+  LDA #$01        ; X velocity = 1
+  STA ball_dx
+
+  LDA #$01        ; Y velocity = 1
+  STA ball_dy
+
   JMP main                ; Jump to main program
 .endproc
 
-; Main program logic
+.proc draw_ball_sprite
+  LDA #$00
+  STA $2003           ; Set OAM address to 0
+
+  LDA ball_y
+  STA $2004           ; Y position
+
+  LDA #$01
+  STA $2004           ; Tile index (solid block)
+
+  LDA #$00
+  STA $2004           ; Attributes
+
+  LDA ball_x
+  STA $2004           ; X position
+
+  RTS
+.endproc
+
+.proc update_ball
+  ; Update X position
+  LDA ball_x
+  CLC
+  ADC ball_dx
+  STA ball_x
+
+  ; Check screen boundaries for X (0–248)
+  CMP #0
+  BNE not_hit_left
+    LDA #1
+    STA ball_dx
+not_hit_left:
+  CMP #248
+  BNE not_hit_right
+    LDA #$FF
+    STA ball_dx
+not_hit_right:
+
+  ; Update Y position
+  LDA ball_y
+  CLC
+  ADC ball_dy
+  STA ball_y
+
+  ; Check screen boundaries for Y (0–210)
+  CMP #0
+  BNE not_hit_top
+    LDA #1
+    STA ball_dy
+not_hit_top:
+  CMP #210
+  BNE not_hit_bottom
+    LDA #$FF
+    STA ball_dy
+not_hit_bottom:
+
+  RTS
+.endproc
+
 .proc main
   ; === Set Background Color ===
   LDX $2002               ; Read PPUSTATUS to reset address latch
@@ -82,10 +171,42 @@ vblankwait2:
                           ; bit 1 = 1: Show sprites in leftmost 8 pixels
   STA $2001               ; Write to PPUMASK register (enable rendering)
 
-  ; === Infinite Loop ===
+  ; === Sprite DMA Setup ===
+  LDA #$00
+  STA $2003
+
+  LDA ball_y
+  STA $2004
+
+  LDA #$01
+  STA $2004
+
+  LDA #$00
+  STA $2004
+
+  LDA ball_x
+  STA $2004
+
 forever:
-  JMP forever             ; Jump to forever (infinite loop)
-                          ; Program stays here, displaying the background color
+  JSR update_ball
+
+  ; DMA sprite transfer
+  LDA #$00
+  STA $2003
+
+  LDA ball_y
+  STA $2004
+
+  LDA #$01
+  STA $2004
+
+  LDA #$00
+  STA $2004
+
+  LDA ball_x
+  STA $2004
+
+  JMP forever
 .endproc
 
 ; Interrupt vectors - tells CPU where to jump for each interrupt
@@ -96,8 +217,28 @@ forever:
 
 ; Character ROM data (graphics patterns)
 .segment "CHARS"
-.res 8192                 ; Reserve 8KB of space for CHR-ROM data
-                          ; (sprite and background tile patterns)
+
+; Tile 0 (blank)
+.repeat 16
+  .byte $00
+.endrepeat
+
+; Tile 1 (solid block)
+.repeat 8
+  .byte %11111111
+.endrepeat
+
+.repeat 8
+  .byte %00000000
+.endrepeat
+
+; Fill the rest with zeros to reach 8192 bytes
+.repeat 8192 - 32
+  .byte $00
+.endrepeat
+
+; Reserve 8KB of space for CHR-ROM data
+; (sprite and background tile patterns)
 
 ; Startup segment
 .segment "STARTUP"
